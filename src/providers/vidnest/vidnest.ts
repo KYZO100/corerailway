@@ -20,6 +20,7 @@ import type {
     hollymoviehdResponse,
     vidlinkResponse,
     purstreamResponse,
+    videasyResponse,
     deltaResponse,
     movieboxSource
 } from './vidnest.types.js';
@@ -54,7 +55,8 @@ export class VidNestProvider extends BaseProvider {
         { path: 'flixhq', query: '' },
         { path: 'vidlink', query: '' },
         { path: 'onehd', query: '?server=upcloud' },
-        { path: 'klikxxi', query: '' }
+        { path: 'klikxxi', query: '' },
+        { path: 'videasy', query: '' }
     ];
 
     private readonly handlers: {
@@ -112,13 +114,25 @@ export class VidNestProvider extends BaseProvider {
         hollymoviehd: {
             parse: (d) => decrypt<hollymoviehdResponse>(d),
             mapSources: (root) =>
-                root.sources.map((s) => ({
-                    url: this.createProxyUrl(s.file),
-                    type: this.inferSourceType(s.type, s.file),
-                    quality: s.label,
-                    audioTracks: [{ language: 'English', label: 'eng' }],
-                    provider: { id: this.id, name: this.name }
-                })),
+                root.sources
+                    ? root.sources.map((s) => ({
+                          url: this.createProxyUrl(s.file),
+                          type: this.inferSourceType(s.type, s.file),
+                          quality: s.label,
+                          audioTracks: [
+                              { language: 'English', label: 'eng' }
+                          ],
+                          provider: { id: this.id, name: this.name }
+                      }))
+                    : (root.streams ?? []).map((s) => ({
+                          url: this.createProxyUrl(s.url, s.headers),
+                          type: this.inferSourceType(s.type, s.url),
+                          quality: 'Auto',
+                          audioTracks: [
+                              { language: s.language, label: s.language }
+                          ],
+                          provider: { id: this.id, name: this.name }
+                      })),
             mapSubtitles: () => []
         },
 
@@ -178,7 +192,7 @@ export class VidNestProvider extends BaseProvider {
         moviebox: {
             parse: (d) => decrypt<movieboxSource>(d),
             mapSources: (root) =>
-                root.url.map((u) => ({
+                (Array.isArray(root.url) ? root.url : [root.url]).map((u) => ({
                     url: this.createProxyUrl(u.link, this.HEADERS),
                     type: this.inferSourceType(u.type, u.link),
                     quality: 'Auto',
@@ -187,6 +201,20 @@ export class VidNestProvider extends BaseProvider {
                     ],
                     provider: { id: this.id, name: this.name }
                 })),
+            mapSubtitles: () => []
+        },
+
+        videasy: {
+            parse: (d) => decrypt<videasyResponse>(d),
+            mapSources: (root) => [
+                {
+                    url: this.createProxyUrl(root.url, root.headers),
+                    type: this.inferSourceType('', root.url),
+                    quality: 'Auto',
+                    audioTracks: [{ language: 'English', label: 'eng' }],
+                    provider: { id: this.id, name: this.name }
+                }
+            ],
             mapSubtitles: () => []
         }
     };
@@ -252,13 +280,22 @@ export class VidNestProvider extends BaseProvider {
 
             if (!(key in this.handlers)) return;
 
-            const { sources: s, subtitles: sub } = this.handleServer(
-                key,
-                result.value.data
-            );
+            try {
+                const { sources: s, subtitles: sub } = this.handleServer(
+                    key,
+                    result.value.data
+                );
 
-            sources.push(...s);
-            subtitles.push(...sub);
+                sources.push(...s);
+                subtitles.push(...sub);
+            } catch (error) {
+                diagnostics.push({
+                    code: 'PARTIAL_SCRAPE',
+                    field: '',
+                    message: `${this.name}: failed to parse ${server.path} response (${error instanceof Error ? error.message : 'unknown error'})`,
+                    severity: 'warning'
+                });
+            }
         });
 
         return {

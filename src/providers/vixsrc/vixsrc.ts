@@ -6,7 +6,7 @@ import type {
     Source,
     Subtitle
 } from '@omss/framework';
-import { VixSrcApiResponse } from './vixsrc.types.js';
+import type { VixSrcApiResponse } from './vixsrc.types.js';
 
 export class VixSrcProvider extends BaseProvider {
     readonly id = 'vixsrc';
@@ -26,334 +26,221 @@ export class VixSrcProvider extends BaseProvider {
         supportedContentTypes: ['movies', 'tv']
     };
 
-    /**
-     * Fetch movie sources
-     */
     async getMovieSources(media: ProviderMediaObject): Promise<ProviderResult> {
         return this.getSources(media);
     }
 
-    /**
-     * Fetch TV episode sources
-     */
     async getTVSources(media: ProviderMediaObject): Promise<ProviderResult> {
         return this.getSources(media);
     }
 
-    /**
-     * Main scraping logic
-     */
     private async getSources(
         media: ProviderMediaObject
     ): Promise<ProviderResult> {
         try {
-            const pageUrl = this.buildPageUrl(media);
-
-            const sublink = await this.fetchApi(pageUrl);
-            if (!sublink) {
-                return this.emptyResult('Failed to fetch api', media);
+            const pageApiUrl = this.buildApiUrl(media);
+            const apiData = await this.fetchApi(pageApiUrl);
+            if (!apiData?.src) {
+                return this.emptyResult('no embed path returned by API');
             }
 
-            const html = await this.fetchPage(sublink.src);
-            if (!html) {
-                return this.emptyResult(
-                    'Failed to fetch second embed page',
-                    media
-                );
+            const embedHtml = await this.fetchEmbedPage(apiData.src);
+            if (!embedHtml) {
+                return this.emptyResult('failed to fetch embed page');
             }
 
-            const tokenData = this.extractTokenData(html, media);
+            const tokenData = this.extractTokenData(embedHtml);
             if (!tokenData) {
-                return this.emptyResult('Invalid or expired token', media);
+                return this.emptyResult('invalid or expired token');
             }
 
             const masterUrl = this.buildMasterUrl(tokenData);
-
-            const playlistContent = await this.fetchPlaylist(
-                masterUrl,
-                pageUrl,
-                media
-            );
-            if (!playlistContent) {
-                return this.emptyResult('Failed to fetch playlist', media);
+            const playlist = await this.fetchPlaylist(masterUrl, pageApiUrl);
+            if (!playlist) {
+                return this.emptyResult('failed to fetch HLS playlist');
             }
 
-            return this.parsePlaylist(
-                playlistContent,
-                masterUrl,
-                pageUrl,
-                media
-            );
+            return this.parsePlaylist(playlist, masterUrl, pageApiUrl);
         } catch (error) {
             return this.emptyResult(
                 error instanceof Error
                     ? error.message
-                    : 'Unknown provider error',
-                media
+                    : 'unknown provider error'
             );
         }
     }
 
-    /**
-     * Build page URL based on media type
-     */
-    private buildPageUrl(media: ProviderMediaObject): string {
+    private buildApiUrl(media: ProviderMediaObject): string {
         if (media.type === 'movie') {
             return `${this.BASE_URL}/api/movie/${media.tmdbId}`;
-        } else {
-            return `${this.BASE_URL}/api/tv/${media.tmdbId}/${media.s}/${media.e}`;
         }
+
+        return `${this.BASE_URL}/api/tv/${media.tmdbId}/${media.s ?? 1}/${media.e ?? 1}`;
     }
 
-    /**
-     * Fetch page HTML
-     */
     private async fetchApi(url: string): Promise<VixSrcApiResponse | null> {
         try {
-            const response = await fetch(url, {
-                headers: this.HEADERS
-            });
+            const response = await fetch(url, { headers: this.HEADERS });
+            if (!response.ok) return null;
 
-            if (response.status !== 200) {
-                return null;
-            }
-
-            return (await response.json()) as VixSrcApiResponse;
+            const payload = (await response.json()) as VixSrcApiResponse;
+            return typeof payload?.src === 'string' && payload.src
+                ? payload
+                : null;
         } catch {
             return null;
         }
     }
 
-    private async fetchPage(suburl: string): Promise<string | null> {
+    private async fetchEmbedPage(embedPath: string): Promise<string | null> {
         try {
-            const response = await fetch(this.BASE_URL + suburl, {
-                headers: this.HEADERS
+            const response = await fetch(new URL(embedPath, this.BASE_URL), {
+                headers: {
+                    ...this.HEADERS,
+                    Accept: 'text/html,application/xhtml+xml,*/*'
+                }
             });
-
-            if (response.status !== 200) {
-                return null;
-            }
-
-            return await response.text();
+            return response.ok ? await response.text() : null;
         } catch {
             return null;
         }
     }
 
-    /**
-     * Extract token, expires, and playlist URL from HTML
-     */
     private extractTokenData(
-        html: string,
-        media: ProviderMediaObject
+        html: string
     ): { token: string; expires: string; playlist: string } | null {
         const token = html.match(/token["']\s*:\s*["']([^"']+)/)?.[1];
         const expires = html.match(/expires["']\s*:\s*["']([^"']+)/)?.[1];
         const playlist = html.match(/url\s*:\s*["']([^"']+)/)?.[1];
 
-        if (!token || !expires || !playlist) {
-            return null;
-        }
-
-        if (this.isTokenExpired(expires)) {
+        if (!token || !expires || !playlist || this.isTokenExpired(expires)) {
             return null;
         }
 
         return { token, expires, playlist };
     }
 
-    /**
-     * Check if token is expired
-     */
     private isTokenExpired(expires: string): boolean {
-        return parseInt(expires, 10) * 1000 - 60_000 < Date.now();
+        const expiration = Number.parseInt(expires, 10);
+        return (
+            !Number.isFinite(expiration) ||
+            expiration * 1000 - 60_000 < Date.now()
+        );
     }
 
-    /**
-     * Build master playlist URL with token
-     */
     private buildMasterUrl(tokenData: {
         token: string;
         expires: string;
         playlist: string;
     }): string {
-        const { token, expires, playlist } = tokenData;
-        const separator = playlist.includes('?') ? '&' : '?';
-        return `${playlist}${separator}token=${token}&expires=${expires}&h=1`;
+        const separator = tokenData.playlist.includes('?') ? '&' : '?';
+        return `${tokenData.playlist}${separator}token=${tokenData.token}&expires=${tokenData.expires}&h=1`;
     }
 
-    /**
-     * Fetch playlist content
-     */
     private async fetchPlaylist(
-        url: string,
-        referer: string,
-        media: ProviderMediaObject
+        masterUrl: string,
+        pageApiUrl: string
     ): Promise<string | null> {
         try {
-            const response = await fetch(url, {
-                headers: {
-                    ...this.HEADERS,
-                    Referer: referer
-                }
+            const response = await fetch(masterUrl, {
+                headers: { ...this.HEADERS, Referer: pageApiUrl }
             });
-
-            if (response.status !== 200) {
-                return null;
-            }
-
-            return await response.text();
+            return response.ok ? await response.text() : null;
         } catch {
             return null;
         }
     }
 
-    /**
-     * Parse HLS playlist content
-     */
     private parsePlaylist(
         content: string,
         masterUrl: string,
-        pageUrl: string,
-        media: ProviderMediaObject
+        pageApiUrl: string
     ): ProviderResult {
-        const audioTracks = this.parseAudioTracks(content);
-        const subtitles = this.parseSubtitles(content, pageUrl);
-        const variants = this.parseVariants(content);
-
-        if (variants.length === 0) {
-            return this.emptyResult('No streams found in playlist', media);
+        const bestResolution = this.findBestResolution(content);
+        if (!bestResolution) {
+            return this.emptyResult('no streams found in HLS playlist');
         }
 
-        const bestVariant = variants.reduce((best, current) =>
-            current.resolution > best.resolution ? current : best
-        );
-
+        const requestHeaders = { ...this.HEADERS, Referer: pageApiUrl };
         const sources: Source[] = [
             {
-                url: this.createProxyUrl(masterUrl, {
-                    ...this.HEADERS,
-                    Referer: pageUrl
-                }),
+                url: this.streamUrl(masterUrl, requestHeaders),
                 type: 'hls',
-                quality: `${bestVariant.resolution}p`,
-                audioTracks:
-                    audioTracks.length > 0
-                        ? audioTracks
-                        : [
-                              {
-                                  language: 'en',
-                                  label: 'English'
-                              }
-                          ],
-                provider: {
-                    id: this.id,
-                    name: this.name
-                }
+                quality: `${bestResolution}p`,
+                audioTracks: this.parseAudioTracks(content),
+                provider: { id: this.id, name: this.name }
             }
         ];
 
         return {
             sources,
-            subtitles,
-            diagnostics:
-                sources.length === 0
-                    ? [
-                          {
-                              code: 'PARTIAL_SCRAPE',
-                              message: 'No playable streams found',
-                              field: 'sources',
-                              severity: 'warning'
-                          }
-                      ]
-                    : []
+            subtitles: this.parseSubtitles(content, masterUrl, requestHeaders),
+            diagnostics: []
         };
     }
 
-    /**
-     * Parse audio tracks from HLS manifest
-     */
     private parseAudioTracks(
         content: string
     ): Array<{ language: string; label: string }> {
-        const tracks: Array<{ language: string; label: string }> = [];
-        const lines = content.split('\n');
+        const tracks = content
+            .split('\n')
+            .filter((line) => line.startsWith('#EXT-X-MEDIA:TYPE=AUDIO'))
+            .map((line) => ({
+                language: line.match(/LANGUAGE="([^"]+)"/)?.[1] ?? 'unknown',
+                label: line.match(/NAME="([^"]+)"/)?.[1] ?? 'Audio'
+            }));
 
-        for (const line of lines) {
-            if (!line.startsWith('#EXT-X-MEDIA:TYPE=AUDIO')) continue;
-
-            const language = line.match(/LANGUAGE="([^"]+)"/)?.[1] ?? 'unknown';
-            const label = line.match(/NAME="([^"]+)"/)?.[1] ?? 'Audio';
-
-            tracks.push({
-                language,
-                label
-            });
-        }
-
-        return tracks;
+        return tracks.length > 0
+            ? tracks
+            : [{ language: 'en', label: 'English' }];
     }
 
-    /**
-     * Parse subtitles from HLS manifest
-     */
-    private parseSubtitles(content: string, pageUrl: string): Subtitle[] {
-        const subtitles: Subtitle[] = [];
+    private parseSubtitles(
+        content: string,
+        masterUrl: string,
+        headers: Record<string, string>
+    ): Subtitle[] {
+        return content
+            .split('\n')
+            .filter((line) => line.startsWith('#EXT-X-MEDIA:TYPE=SUBTITLES'))
+            .flatMap((line) => {
+                const uri = line.match(/URI="([^"]+)"/)?.[1];
+                if (!uri) return [];
 
-        /* Doesn't work.. 
-        // TODO: Fix subtitles for vixsrc
-        const lines = content.split('\n');
-
-        for (const line of lines) {
-            if (!line.startsWith('#EXT-X-MEDIA:TYPE=SUBTITLES')) continue;
-
-            const url = line.match(/URI="([^"]+)"/)?.[1];
-            if (!url) continue;
-
-            const language = line.match(/NAME="([^"]+)"/)?.[1] ?? 'unknown';
-
-            subtitles.push({
-                url: this.createProxyUrl(url, {
-                    ...this.HEADERS,
-                    Referer: pageUrl
-                }),
-                label: language,
-                format: 'vtt'
+                return [
+                    {
+                        url: this.streamUrl(new URL(uri, masterUrl).toString(), headers),
+                        label: line.match(/NAME="([^"]+)"/)?.[1] ?? 'unknown',
+                        format: 'vtt' as const
+                    }
+                ];
             });
-        }
-        */
-
-        return subtitles;
     }
 
-    /**
-     * Parse quality variants from HLS manifest
-     */
-    private parseVariants(
-        content: string
-    ): Array<{ resolution: number; url: string }> {
-        const variants: Array<{ resolution: number; url: string }> = [];
-        const regex =
+    private streamUrl(url: string, headers: Record<string, string>): string {
+        if (process.env.MEDIA_PROXY === 'true') return this.createProxyUrl(url, headers);
+        const parsed = new URL(url);
+        parsed.searchParams.set('data', encodeURIComponent(JSON.stringify({ url, headers })));
+        return parsed.toString();
+    }
+
+    private findBestResolution(content: string): number {
+        const variantPattern =
             /#EXT-X-STREAM-INF:[^\n]*RESOLUTION=\d+x(\d+)[^\n]*\n([^\n]+)/g;
-        let match;
+        let bestResolution = 0;
+        let match: RegExpExecArray | null;
 
-        while ((match = regex.exec(content)) !== null) {
-            variants.push({
-                resolution: parseInt(match[1], 10),
-                url: match[2]
-            });
+        while ((match = variantPattern.exec(content)) !== null) {
+            bestResolution = Math.max(
+                bestResolution,
+                Number.parseInt(match[1], 10)
+            );
         }
 
-        return variants;
+        return bestResolution;
     }
 
-    /**
-     * Return empty result with diagnostic
-     */
-    private emptyResult(
-        message: string,
-        media: ProviderMediaObject
-    ): ProviderResult {
+    private emptyResult(message: string): ProviderResult {
         return {
             sources: [],
             subtitles: [],
@@ -368,9 +255,6 @@ export class VixSrcProvider extends BaseProvider {
         };
     }
 
-    /**
-     * Health check
-     */
     async healthCheck(): Promise<boolean> {
         try {
             const response = await fetch(this.BASE_URL, {
@@ -383,3 +267,4 @@ export class VixSrcProvider extends BaseProvider {
         }
     }
 }
+

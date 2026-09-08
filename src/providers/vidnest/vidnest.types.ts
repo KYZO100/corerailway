@@ -47,8 +47,11 @@ export interface Subtitle {
 
 // hollymoviehd
 export interface hollymoviehdResponse {
-    sources: hollymoviehdSource[];
-    success: boolean;
+    /** Legacy HollyMovieHD response. */
+    sources?: hollymoviehdSource[];
+    /** Current HollyMovieHD response, matching the AllMovies stream shape. */
+    streams?: vidlinkStream[];
+    success?: boolean;
 }
 
 export interface hollymoviehdSource {
@@ -118,7 +121,7 @@ export interface movieboxSource {
     needConfig: boolean;
     provider: string;
     proxy: boolean;
-    url: movieboxUrl[];
+    url: movieboxUrl[] | movieboxUrl;
 }
 
 export interface movieboxUrl {
@@ -126,6 +129,12 @@ export interface movieboxUrl {
     link: string;
     resolution: string;
     type: string;
+}
+
+/** Current VidNest Videasy backend response. */
+export interface videasyResponse {
+    headers: Record<string, string>;
+    url: string;
 }
 
 // SERVER MAP
@@ -138,6 +147,7 @@ export interface ServerMap {
     purstream: purstreamResponse;
     delta: deltaResponse;
     moviebox: movieboxSource;
+    videasy: videasyResponse;
 }
 
 // only servers we actually support (others will be skipped)
