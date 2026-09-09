@@ -215,7 +215,11 @@ ${borderBottom}
 `);
 }
 
-const isCloudflareWorker = typeof navigator !== 'undefined' && navigator.userAgent === 'Cloudflare-Workers';
+const isCloudflareWorker =
+    process.env.NODE_ENV === 'production' ||
+    process.env.CLOUDFLARE_WORKERS === 'true' ||
+    (typeof navigator !== 'undefined' && navigator.userAgent === 'Cloudflare-Workers') ||
+    typeof (globalThis as any).WebSocketPair !== 'undefined';
 
 if (!isCloudflareWorker) {
     main().catch(() => {
@@ -223,7 +227,7 @@ if (!isCloudflareWorker) {
     });
 }
 
-async function withoutStartupIntervals<T>(factory: () => Promise<T>): Promise<T> {
+async function withoutStartupTimers<T>(factory: () => Promise<T>): Promise<T> {
     const originalSetInterval = globalThis.setInterval;
     try {
         globalThis.setInterval = (() => 0) as unknown as typeof setInterval;
@@ -284,7 +288,7 @@ async function createWorkerServer(env: Record<string, string | undefined>) {
 }
 
 const workerServerPromise = isCloudflareWorker
-    ? createWorkerServer(process.env as Record<string, string | undefined>)
+    ? withoutStartupTimers(() => createWorkerServer(process.env as Record<string, string | undefined>))
     : undefined;
 
 export default {
