@@ -216,7 +216,6 @@ ${borderBottom}
 }
 
 const isCloudflareWorker =
-    process.env.NODE_ENV === 'production' ||
     process.env.CLOUDFLARE_WORKERS === 'true' ||
     (typeof navigator !== 'undefined' && navigator.userAgent === 'Cloudflare-Workers') ||
     typeof (globalThis as any).WebSocketPair !== 'undefined';
