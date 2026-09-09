@@ -40,6 +40,7 @@ ENV PORT=${PORT}
 ENV CACHE_TYPE=${CACHE_TYPE}
 
 COPY package*.json ./
+COPY scripts ./scripts
 RUN npm ci --only=production
 
 COPY --from=builder /app/dist ./dist
