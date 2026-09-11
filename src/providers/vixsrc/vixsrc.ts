@@ -15,9 +15,10 @@ export class VixSrcProvider extends BaseProvider {
     readonly BASE_URL = 'https://vixsrc.to';
     readonly HEADERS = {
         'User-Agent':
-            'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/150 Safari/537.36',
+            'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
         Accept: 'application/json, text/javascript, */*; q=0.01',
         'Accept-Language': 'en-US,en;q=0.9',
+        'Cache-Control': 'no-cache',
         Referer: this.BASE_URL,
         Origin: this.BASE_URL
     };
@@ -40,9 +41,6 @@ export class VixSrcProvider extends BaseProvider {
         try {
             const pageApiUrl = this.buildApiUrl(media);
             const apiData = await this.fetchApi(pageApiUrl);
-            if (!apiData?.src) {
-                return this.emptyResult('no embed path returned by API');
-            }
 
             const embedHtml = await this.fetchEmbedPage(apiData.src);
             if (!embedHtml) {
@@ -78,18 +76,29 @@ export class VixSrcProvider extends BaseProvider {
         return `${this.BASE_URL}/api/tv/${media.tmdbId}/${media.s ?? 1}/${media.e ?? 1}`;
     }
 
-    private async fetchApi(url: string): Promise<VixSrcApiResponse | null> {
-        try {
-            const response = await fetch(url, { headers: this.HEADERS });
-            if (!response.ok) return null;
+    private async fetchApi(url: string): Promise<VixSrcApiResponse> {
+        let failure = 'VixSrc API did not return an embed path';
+        for (let attempt = 0; attempt < 2; attempt += 1) {
+            try {
+                const response = await fetch(url, {
+                    headers: this.HEADERS,
+                    signal: AbortSignal.timeout(15_000)
+                });
+                if (!response.ok) {
+                    failure = `VixSrc API returned ${response.status}`;
+                    continue;
+                }
 
-            const payload = (await response.json()) as VixSrcApiResponse;
-            return typeof payload?.src === 'string' && payload.src
-                ? payload
-                : null;
-        } catch {
-            return null;
+                const payload = (await response.json()) as VixSrcApiResponse;
+                if (typeof payload?.src === 'string' && payload.src) {
+                    return payload;
+                }
+                failure = 'VixSrc API response did not include an embed path';
+            } catch (error) {
+                failure = `VixSrc API request failed: ${error instanceof Error ? error.message : 'unknown error'}`;
+            }
         }
+        throw new Error(failure);
     }
 
     private async fetchEmbedPage(embedPath: string): Promise<string | null> {
@@ -98,7 +107,8 @@ export class VixSrcProvider extends BaseProvider {
                 headers: {
                     ...this.HEADERS,
                     Accept: 'text/html,application/xhtml+xml,*/*'
-                }
+                },
+                signal: AbortSignal.timeout(15_000)
             });
             return response.ok ? await response.text() : null;
         } catch {
@@ -143,7 +153,8 @@ export class VixSrcProvider extends BaseProvider {
     ): Promise<string | null> {
         try {
             const response = await fetch(masterUrl, {
-                headers: { ...this.HEADERS, Referer: pageApiUrl }
+                headers: { ...this.HEADERS, Referer: pageApiUrl },
+                signal: AbortSignal.timeout(15_000)
             });
             return response.ok ? await response.text() : null;
         } catch {

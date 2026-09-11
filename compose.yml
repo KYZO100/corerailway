@@ -12,6 +12,8 @@ services:
             - CACHE_TYPE=redis
             - REDIS_HOST=redis
             - REDIS_PORT=6379
+            - SHOWBOX_UI_TOKEN=${SHOWBOX_UI_TOKEN}
+            - SHOWBOX_REGION=${SHOWBOX_REGION:-USA7}
         depends_on:
             - redis
         restart: unless-stopped

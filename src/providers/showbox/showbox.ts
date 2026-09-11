@@ -40,7 +40,15 @@ export class ShowboxProvider extends BaseProvider {
         const primary = await this.pstream(media);
         sources.push(...primary);
 
-        return sources.length ? this.result(sources) : this.empty('No playable sources found');
+        if (sources.length) return this.result(sources);
+
+        // PStream/FEBBox requires this token from many cloud-provider egress
+        // ranges. Keep the provider enabled without it for local compatibility,
+        // but make a missing deployment secret actionable in diagnostics.
+        if (!process.env.SHOWBOX_UI_TOKEN?.trim()) {
+            return this.empty('No playable sources found; configure SHOWBOX_UI_TOKEN in the deployment environment');
+        }
+        return this.empty('No playable sources found');
     }
 
     private async pstream(media: ProviderMediaObject): Promise<Source[]> {
